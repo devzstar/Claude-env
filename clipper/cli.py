@@ -12,7 +12,7 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
-from . import db
+from . import db, urls
 
 PLATFORM_ALIASES = {
     "tiktok": "tiktok", "tt": "tiktok",
@@ -260,9 +260,15 @@ def resolve_account(conn, plat: str, account_arg: str | None) -> sqlite3.Row:
     die(f"several {plat} accounts — pass --account")
 
 
-def post_guardrails(conn, clip, camp, acct, plat: str, caption: str | None) -> None:
-    if acct["whop_linked_at"] is None:
+def post_guardrails(conn, clip, camp, acct, plat: str, caption: str | None,
+                    posted_at: str) -> None:
+    linked = acct["whop_linked_at"]
+    if linked is None:
         warn(f"account {acct['handle']} is NOT linked to Whop — views may be unverifiable")
+    elif posted_at < linked:  # both ISO-8601 UTC text, so string order = time order
+        warn(f"posted at {posted_at}, BEFORE account {acct['handle']} was linked to Whop "
+             f"({linked}) — views may be unverifiable. If the link date is wrong, fix it with "
+             f"`clipper account link {acct['id']} --at ...`")
     if camp["status"] != "active":
         warn(f"campaign '{camp['name']}' is {camp['status']}")
     if plat not in split_csv(camp["platforms"]):
@@ -290,19 +296,26 @@ def cmd_post_add(conn, args):
     clip = get_one(conn, "clips", args.clip)
     camp = get_one(conn, "campaigns", clip["campaign_id"])
     acct = resolve_account(conn, args.platform, args.account)
-    post_guardrails(conn, clip, camp, acct, args.platform, args.caption)
     try:
-        new_id = insert(conn, "posts", {
-            "clip_id": clip["id"], "platform": args.platform, "account_id": acct["id"],
-            "post_url": args.url, "caption": args.caption, "posted_at": args.at,
-        })
-    except sqlite3.IntegrityError:
-        die(f"post URL already logged: {args.url}")
+        url = urls.normalize_url(args.url)
+    except urls.UrlError as e:
+        die(str(e))
+    existing = conn.execute("SELECT id FROM posts WHERE post_url = ?", (url,)).fetchone()
+    if existing:
+        die(f"post URL already logged as post {existing['id']}: {url}")
+    posted_at = args.at or db.now_utc()
+    post_guardrails(conn, clip, camp, acct, args.platform, args.caption, posted_at)
+    new_id = insert(conn, "posts", {
+        "clip_id": clip["id"], "platform": args.platform, "account_id": acct["id"],
+        "post_url": url, "caption": args.caption, "posted_at": posted_at,
+    })
     conn.execute("UPDATE clips SET status = 'posted' WHERE id = ?", (clip["id"],))
     conn.commit()
     print(f"post {new_id} logged ({args.platform}, {acct['handle']})")
+    if url != args.url.strip():
+        print(f"    stored as {url}")
     if args.submitted:
-        insert(conn, "submissions", {"post_id": new_id, "submitted_at": args.at})
+        insert(conn, "submissions", {"post_id": new_id, "submitted_at": posted_at})
         print(f"submission logged for post {new_id}")
     else:
         print(f">>> Submit it to the campaign NOW, then: clipper submit add {new_id}")

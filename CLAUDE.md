@@ -18,6 +18,13 @@ Read PLAN.md first. This file records **what we decided and why**, plus lessons 
 
 ## Decisions
 
+### 2026-11-10 — Post URL normalisation + Whop link timing
+- **Post URLs are normalised before the duplicate check, and the normalised form is what's stored** (`clipper/urls.py`): force https, lowercase the host, drop the query string, fragment and trailing slash. Path case is kept because Shorts and Reels IDs are case-sensitive.
+  - Exception: on `youtube.com/watch` URLs the `v=` param is kept, since it *is* the video ID. Stripping it would make every watch URL look like the same post.
+  - `vm.tiktok.com` / `vt.tiktok.com` short links are expanded by following redirects (needs network), then normalised. If expansion fails, or lands on something that isn't `/video/<id>` or `/photo/<id>`, `post add` **errors out** and asks for the full URL rather than storing a short link that would defeat the duplicate check. This is the one place the CLI blocks instead of warning, and the workaround is just to paste the full URL.
+  - Rows logged before this change were not re-normalised (no migration). The loop hadn't started yet, so it wasn't needed.
+- **Whop warning also fires when `posted_at` < `whop_linked_at`**, not only when the account is unlinked. Both are ISO UTC text, so a string comparison is a time comparison. `account link` defaults to *now*, so if you linked in Whop earlier than you logged it, pass `--at` or you'll get false warnings.
+
 ### 2026-11-10 — M1 schema + CLI
 - **Schema = PLAN §4 plus some extras:**
   - `accounts` table (platform, handle, `whop_linked_at`). `posts.account_id` references it, replacing free-text `posts.account`. Why: unlinked accounts are a top rejection cause, and M0's "done" is "accounts linked to Whop", so this needs to be queryable.
@@ -41,6 +48,7 @@ Read PLAN.md first. This file records **what we decided and why**, plus lessons 
 - What view data does TikTok's API expose for our account?
 - Instagram Reels publishing needs a Business or Creator account. Which one are we using?
 - How exactly do campaigns define the view-tracking window? Record what we see in Lessons.
+- TikTok short-link expansion is only tested with mocks. Check it works on a real `vm.tiktok.com` link during M1 (TikTok may treat the plain urllib request differently from a browser).
 
 ## Lessons (from running the loop)
 

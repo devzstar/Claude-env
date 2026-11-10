@@ -7,8 +7,9 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from clipper import cli
+from clipper import cli, urls
 
 
 class CliLoopTest(unittest.TestCase):
@@ -28,8 +29,11 @@ class CliLoopTest(unittest.TestCase):
         return out.getvalue(), err.getvalue()
 
     def q(self, sql, *params):
-        with sqlite3.connect(self.db) as conn:
+        conn = sqlite3.connect(self.db)
+        try:
             return conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
 
     def test_full_manual_loop(self):
         self.run_cli("account", "add", "tiktok", "@me", "--whop-linked")
@@ -83,6 +87,56 @@ class CliLoopTest(unittest.TestCase):
             self.run_cli("post", "add", "1", "yt", "https://youtube.com/shorts/a")
         with self.assertRaises(SystemExit):
             self.run_cli("submit", "add", "1")
+
+    def setup_post_ready(self, platform="tiktok", linked_at=None):
+        self.run_cli("account", "add", platform, "@me")
+        self.run_cli("account", "link", "1", *(["--at", linked_at] if linked_at else []))
+        self.run_cli("campaign", "add", "C", "--rate", "1", "--budget-left", "100")
+        self.run_cli("clip", "add", "1")
+        self.run_cli("clip", "add", "1")
+
+    def test_post_url_is_normalised_before_unique_check(self):
+        self.setup_post_ready()
+        full = "https://www.tiktok.com/@me/video/7301234567890123456"
+        out, _ = self.run_cli("post", "add", "1", "tt", full + "/?is_from_webapp=1&sender_device=pc")
+        self.assertIn("stored as " + full, out)
+        self.assertEqual(self.q("SELECT post_url FROM posts")[0][0], full)
+        # Same post, different tracking params / slash: rejected as a duplicate.
+        with self.assertRaises(SystemExit):
+            self.run_cli("post", "add", "2", "tt", full + "?_r=1")
+        # Same post via a short link: expanded, then rejected as a duplicate.
+        with mock.patch.object(urls, "expand_short_link", return_value=full + "?_t=8xyz"):
+            with self.assertRaises(SystemExit):
+                self.run_cli("post", "add", "2", "tt", "https://vm.tiktok.com/ZMabc123/")
+        self.assertEqual(self.q("SELECT COUNT(*) FROM posts")[0][0], 1)
+
+    def test_short_link_is_stored_expanded(self):
+        self.setup_post_ready()
+        full = "https://www.tiktok.com/@me/video/7301234567890123456"
+        with mock.patch.object(urls, "expand_short_link", return_value=full + "?_r=1"):
+            self.run_cli("post", "add", "1", "tt", "https://vm.tiktok.com/ZMabc123/")
+        self.assertEqual(self.q("SELECT post_url FROM posts")[0][0], full)
+
+    def test_unexpandable_short_link_is_not_logged(self):
+        self.setup_post_ready()
+        with mock.patch.object(urls, "expand_short_link",
+                               side_effect=OSError("network unreachable")):
+            with self.assertRaises(SystemExit):
+                self.run_cli("post", "add", "1", "tt", "https://vm.tiktok.com/ZMabc123/")
+        self.assertEqual(self.q("SELECT COUNT(*) FROM posts")[0][0], 0)
+
+    def test_whop_warning_when_posted_before_link(self):
+        self.setup_post_ready(linked_at="2026-11-10T12:00:00Z")
+        _, err = self.run_cli("post", "add", "1", "tt", "https://www.tiktok.com/@me/video/1",
+                              "--at", "2026-11-10T11:59:00Z")
+        self.assertIn("BEFORE account @me was linked to Whop", err)
+        self.assertEqual(self.q("SELECT COUNT(*) FROM posts")[0][0], 1)  # still logged
+
+    def test_no_whop_warning_when_posted_after_link(self):
+        self.setup_post_ready(linked_at="2026-11-10T12:00:00Z")
+        _, err = self.run_cli("post", "add", "1", "tt", "https://www.tiktok.com/@me/video/1",
+                              "--at", "2026-11-10T12:01:00Z")
+        self.assertNotIn("Whop", err)
 
 
 if __name__ == "__main__":

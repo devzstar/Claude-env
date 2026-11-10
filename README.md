@@ -70,8 +70,10 @@ clipper time add 40 review
 
 Platform names: `tiktok`/`tt`, `youtube`/`yt`/`shorts`, `instagram`/`ig`/`reels`. Times in `--at` accept `YYYY-MM-DD` or `YYYY-MM-DD HH:MM` (local time, stored as UTC).
 
+Post URLs are normalised before storing: tracking params, trailing slash and fragment are stripped, and `vm.tiktok.com` short links are expanded (needs network). Logging the same post twice under a different URL is rejected.
+
 `post add` prints **WARN** lines (and still logs the post) when:
-- the account isn't linked to Whop
+- the account isn't linked to Whop, or the post is dated before the link (`account link <id> --at ...` to record when you really linked it)
 - the platform isn't eligible for the campaign
 - the caption is missing required tags or credits
 - the campaign isn't active or its budget is used up
