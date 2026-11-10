@@ -1,0 +1,10 @@
+# Local data — never commit footage or the live DB
+data/*.db
+data/*.db-*
+sources/
+clips/
+screenshots/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
